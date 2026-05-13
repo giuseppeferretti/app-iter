@@ -1,0 +1,8 @@
+flet>=0.85
+playwright>=1.40
+pandas>=2.0
+openpyxl>=3.1
+cryptography>=42
+requests>=2.31
+supabase>=2.0
+python-dotenv>=1.0
