@@ -29,6 +29,15 @@ const ASAAS_WEBHOOK_TOKEN = Deno.env.get("ASAAS_WEBHOOK_TOKEN")!;
 const ASAAS_API_KEY = Deno.env.get("ASAAS_API_KEY")!;
 const ASAAS_ENV = (Deno.env.get("ASAAS_ENV") ?? "sandbox").toLowerCase();
 
+// E-mail de boas-vindas (Resend) — opcional; se RESEND_API_KEY não estiver
+// definido, o envio é skipado silenciosamente.
+const RESEND_API_KEY = Deno.env.get("RESEND_API_KEY") ?? "";
+const WELCOME_EMAIL_FROM = Deno.env.get("WELCOME_EMAIL_FROM") ??
+  "App Iter <onboarding@resend.dev>";
+const DOWNLOAD_URL = Deno.env.get("APP_DOWNLOAD_URL") ??
+  "https://github.com/giuseppeferretti/app-iter/releases/latest/download/AppIter_Setup.exe";
+const SUPPORT_EMAIL = Deno.env.get("SUPPORT_EMAIL") ?? "suporte.iter@gmail.com";
+
 const ASAAS_API_BASE = ASAAS_ENV === "production"
   ? "https://api.asaas.com/v3"
   : "https://api-sandbox.asaas.com/v3";
@@ -175,6 +184,136 @@ async function upsertSubscriber(opts: {
   return active;
 }
 
+// ── E-mail de boas-vindas via Resend ─────────────────────────────────────────
+
+function montarEmailHtml(email: string): { subject: string; html: string; text: string } {
+  const subject = "Bem-vindo ao App Iter — baixe o aplicativo";
+  const html = `<!doctype html>
+<html lang="pt-BR">
+  <body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#0c0c10;color:#e8e8ed;padding:40px 20px;margin:0;">
+    <div style="max-width:560px;margin:0 auto;background:#15151c;border-radius:12px;padding:36px 32px;border:1px solid rgba(255,255,255,0.06);">
+      <div style="font-family:'Courier New',monospace;font-size:11px;letter-spacing:0.22em;color:rgba(255,255,255,0.55);text-transform:uppercase;margin-bottom:24px;">
+        App Iter
+      </div>
+      <h1 style="font-size:24px;line-height:1.3;color:#fff;margin:0 0 18px 0;font-weight:600;">
+        Sua assinatura está ativa.
+      </h1>
+      <p style="font-size:15px;line-height:1.55;color:rgba(255,255,255,0.78);margin:0 0 28px 0;">
+        Pagamento confirmado. Você já pode baixar o App Iter e começar a automatizar o lançamento de horas no SACI.
+      </p>
+
+      <div style="margin:32px 0;">
+        <a href="${DOWNLOAD_URL}"
+           style="display:inline-block;background:#5b5bf0;color:#fff;text-decoration:none;padding:14px 28px;border-radius:8px;font-weight:600;font-size:15px;">
+          Baixar AppIter_Setup.exe
+        </a>
+      </div>
+
+      <div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);border-radius:8px;padding:20px 22px;margin:28px 0;">
+        <div style="font-family:'Courier New',monospace;font-size:10px;letter-spacing:0.22em;color:rgba(255,255,255,0.45);text-transform:uppercase;margin-bottom:12px;">
+          Próximos passos
+        </div>
+        <ol style="margin:0;padding-left:20px;color:rgba(255,255,255,0.78);font-size:14px;line-height:1.7;">
+          <li>Execute o instalador. O Windows pode mostrar um aviso de "editor desconhecido" — clique em <b>Mais informações</b> &rsaquo; <b>Executar mesmo assim</b>.</li>
+          <li>Abra o App Iter no menu Iniciar.</li>
+          <li>Na tela de licença, digite <b>${email}</b> (o mesmo e-mail que você usou no pagamento).</li>
+          <li>Você receberá um código de 6 dígitos por e-mail. Cole na tela do app pra entrar.</li>
+        </ol>
+      </div>
+
+      <p style="font-size:13px;line-height:1.55;color:rgba(255,255,255,0.55);margin:24px 0 0 0;">
+        Qualquer dúvida, responda este e-mail ou escreva para
+        <a href="mailto:${SUPPORT_EMAIL}" style="color:#9a9aff;text-decoration:none;">${SUPPORT_EMAIL}</a>.
+      </p>
+
+      <hr style="border:none;border-top:1px solid rgba(255,255,255,0.08);margin:32px 0 20px 0;">
+      <p style="font-family:'Courier New',monospace;font-size:10px;letter-spacing:0.18em;color:rgba(255,255,255,0.35);text-transform:uppercase;margin:0;">
+        Iter · App ANAC · 2026
+      </p>
+    </div>
+  </body>
+</html>`;
+  const text = `Sua assinatura do App Iter está ativa.
+
+Baixe o aplicativo: ${DOWNLOAD_URL}
+
+Próximos passos:
+1. Execute o instalador (clique em "Mais informações" > "Executar mesmo assim" se aparecer aviso do Windows).
+2. Abra o App Iter no menu Iniciar.
+3. Na tela de licença, digite ${email} (o e-mail do pagamento).
+4. Cole o código de 6 dígitos que você recebe por e-mail.
+
+Suporte: ${SUPPORT_EMAIL}
+`;
+  return { subject, html, text };
+}
+
+async function enviarEmailBoasVindas(email: string): Promise<boolean> {
+  if (!RESEND_API_KEY) {
+    console.log("[asaas-webhook] RESEND_API_KEY não configurado — skip do e-mail");
+    return false;
+  }
+  const { subject, html, text } = montarEmailHtml(email);
+  const resp = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${RESEND_API_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      from: WELCOME_EMAIL_FROM,
+      to: [email],
+      subject,
+      html,
+      text,
+    }),
+  });
+  if (!resp.ok) {
+    const body = await resp.text();
+    throw new Error(`Resend retornou ${resp.status}: ${body}`);
+  }
+  return true;
+}
+
+async function dispararBoasVindasSeNecessario(opts: {
+  userId: string;
+  email: string;
+}): Promise<"sent" | "skipped" | "already-sent" | "failed"> {
+  // Idempotência: só envia se welcome_email_sent_at for null
+  const { data, error } = await supabaseAdmin
+    .from("subscribers")
+    .select("welcome_email_sent_at")
+    .eq("user_id", opts.userId)
+    .maybeSingle();
+  if (error) {
+    console.error(`[asaas-webhook] erro ao ler welcome_email_sent_at:`, error);
+    return "failed";
+  }
+  if (data?.welcome_email_sent_at) {
+    return "already-sent";
+  }
+
+  try {
+    const enviado = await enviarEmailBoasVindas(opts.email);
+    if (!enviado) return "skipped";
+  } catch (e) {
+    console.error(`[asaas-webhook] erro ao enviar e-mail Resend:`, e);
+    return "failed";
+  }
+
+  // Marca como enviado. Se falhar, no próximo webhook do mesmo evento o
+  // upsert é idempotente mas o e-mail seria reenviado — preferimos tolerar
+  // reenvio raro a deixar cliente sem e-mail.
+  const { error: updErr } = await supabaseAdmin
+    .from("subscribers")
+    .update({ welcome_email_sent_at: new Date().toISOString() })
+    .eq("user_id", opts.userId);
+  if (updErr) {
+    console.error(`[asaas-webhook] erro ao marcar welcome_email_sent_at:`, updErr);
+  }
+  return "sent";
+}
+
 // ── Handler principal ───────────────────────────────────────────────────────
 
 Deno.serve(async (req: Request) => {
@@ -304,10 +443,17 @@ Deno.serve(async (req: Request) => {
     return new Response(`Erro DB: ${(e as Error).message}`, { status: 500 });
   }
 
+  // 9. Dispara e-mail de boas-vindas se foi uma ATIVAÇÃO bem-sucedida
+  //    (idempotente — só envia se welcome_email_sent_at IS NULL).
+  let emailStatus: "sent" | "skipped" | "already-sent" | "failed" | "n/a" = "n/a";
+  if (acao === "activate" && finalActive) {
+    emailStatus = await dispararBoasVindasSeNecessario({ userId, email });
+  }
+
   console.log(
     `[asaas-webhook] OK email=${email} acao=${acao} active=${finalActive} valid_until=${
       validUntil?.toISOString() ?? "null"
-    }`,
+    } welcome_email=${emailStatus}`,
   );
   return new Response(
     JSON.stringify({
@@ -316,6 +462,7 @@ Deno.serve(async (req: Request) => {
       acao,
       active: finalActive,
       valid_until: validUntil,
+      welcome_email: emailStatus,
     }),
     { headers: { "Content-Type": "application/json" } },
   );

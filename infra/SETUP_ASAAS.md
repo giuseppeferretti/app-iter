@@ -36,9 +36,9 @@ No painel do projeto, em **Settings > API**, copie estes 3 valores (você vai pr
 ### 1.3 Rodar a migration
 
 1. No painel Supabase, vá em **SQL Editor** → **New query**
-2. Cole o conteúdo de [`infra/supabase/migrations/001_subscribers.sql`](supabase/migrations/001_subscribers.sql)
-3. Clique **Run** (canto inferior direito). Deve responder "Success. No rows returned."
-4. Confere em **Table Editor**: tabela `subscribers` apareceu com colunas `user_id, email, asaas_customer_id, asaas_subscription_id, active, valid_until, ultimo_evento, updated_at`.
+2. Cole o conteúdo de [`infra/supabase/migrations/001_subscribers.sql`](supabase/migrations/001_subscribers.sql) e clique **Run**
+3. New query de novo, cole [`infra/supabase/migrations/002_welcome_email.sql`](supabase/migrations/002_welcome_email.sql) e clique **Run** (adiciona a coluna `welcome_email_sent_at` usada pelo envio idempotente do e-mail de boas-vindas)
+4. Confere em **Table Editor**: tabela `subscribers` deve ter as colunas `user_id, email, asaas_customer_id, asaas_subscription_id, active, valid_until, ultimo_evento, welcome_email_sent_at, updated_at`.
 
 ### 1.4 Instalar Supabase CLI
 
@@ -109,10 +109,18 @@ cd c:\dev\app_anac
 supabase secrets set `
     ASAAS_WEBHOOK_TOKEN="cole-aqui-o-token-do-2.3" `
     ASAAS_API_KEY="cole-aqui-a-api-key-do-2.1" `
-    ASAAS_ENV="sandbox"
+    ASAAS_ENV="sandbox" `
+    RESEND_API_KEY="re_xxxxxxxxxxxxxxxxxxxxx" `
+    "WELCOME_EMAIL_FROM=App Iter <onboarding@resend.dev>" `
+    APP_DOWNLOAD_URL="https://github.com/giuseppeferretti/app-iter/releases/latest/download/AppIter_Setup.exe" `
+    SUPPORT_EMAIL="suporte.iter@gmail.com"
 ```
 
 (O `SUPABASE_URL` e `SUPABASE_SERVICE_ROLE_KEY` já são automaticamente injetados pelo Supabase nas Edge Functions — não precisa setar.)
+
+> **E-mail de boas-vindas (Resend)** — quando `RESEND_API_KEY` está setado, a Edge Function manda um e-mail automático com o link de download e instruções após cada ativação (`PAYMENT_CONFIRMED`). A coluna `welcome_email_sent_at` em `subscribers` garante idempotência (não envia duas vezes pro mesmo cliente). Se `RESEND_API_KEY` não estiver setado, o envio é silenciosamente skipado e o app funciona igual — só que o cliente fica sem o e-mail.
+>
+> **Remetente:** `onboarding@resend.dev` é o sandbox do Resend (funciona pra qualquer destinatário sem verificar domínio, mas com cara de teste). Quando você tiver um domínio próprio (ex.: `iter.com.br`) verificado no Resend, troque `WELCOME_EMAIL_FROM` pra `App Iter <noreply@iter.com.br>`.
 
 ### 3.2 Deploy
 
@@ -267,6 +275,73 @@ Supabase > **Table Editor > subscribers**. Deve aparecer 1 linha com:
 6. Site Vercel: troca `NEXT_PUBLIC_CHECKOUT_URL`
 
 > ⚠️ Antes da promoção, teste pelo menos 3 cenários em sandbox: (a) pagamento confirmado, (b) cancelamento da assinatura, (c) atraso de pagamento — todos devem refletir corretamente na tabela `subscribers`.
+
+---
+
+## Promover de Sandbox → Produção
+
+Quando o fluxo estiver validado em sandbox e você quiser cobrar de verdade:
+
+### A. Asaas (manual, painel web)
+
+1. Login em [https://www.asaas.com](https://www.asaas.com) (conta de **produção**, não sandbox)
+2. Complete o cadastro da conta caso ainda não tenha (KYC, dados bancários — exigido pra movimentar dinheiro real)
+3. Em **Integrações > API**: gere/copie sua **API Key de produção** (`$aaas_prod_...`)
+4. Em **Cobranças > Links de Pagamento**: crie um novo link
+   - Nome: `App Iter — Mensal`
+   - Valor: R$ 9,90
+   - Tipo: **Assinatura mensal**
+   - Formas: Pix recorrente + Cartão de crédito
+   - Copie a URL gerada — ex.: `https://www.asaas.com/c/abc123`
+5. Em **Integrações > Webhooks**: adicione webhook
+   - URL: `https://alldxuligzfdxgrknqxf.supabase.co/functions/v1/asaas-webhook`
+   - Access Token: gere uma string aleatória de 32+ chars (você passa pro script abaixo)
+   - Eventos: marque **todos** de "Assinaturas" e "Cobranças"
+   - Modo: **SEQUENCIAL**
+   - Estado: **HABILITADO**
+
+> Pode deixar o webhook sandbox ativo em paralelo enquanto testa, mas remova quando estiver vendo eventos reais. Os dois apontam pra mesma Edge Function, e ela só funciona pra um ambiente por vez (controlado por `ASAAS_ENV`).
+
+### B. Promoção do lado do código + Supabase (automatizado)
+
+Roda o script:
+
+```powershell
+.\scripts\promote_to_production.ps1 `
+  -CheckoutUrl  "https://www.asaas.com/c/SEU-LINK-PROD" `
+  -AsaasApiKey  "$aaas_prod_xxxxxxx" `
+  -WebhookToken "<o-mesmo-access-token-que-voce-pos-no-webhook-asaas>" `
+  -Version      "v0.1.1"
+```
+
+Ele faz:
+- Seta no Supabase: `ASAAS_ENV=production`, nova `ASAAS_API_KEY`, novo `ASAAS_WEBHOOK_TOKEN`
+- Atualiza `.env.dist` com a URL de produção
+- Rebuilda o instalador (PyInstaller + Inno Setup)
+- Publica nova release no GitHub
+- Imprime checklist de Vercel + teste
+
+### C. Vercel (manual, painel web)
+
+1. [Vercel dashboard](https://vercel.com/dashboard) → projeto `app-anac` → **Settings > Environment Variables**
+2. Edite `NEXT_PUBLIC_CHECKOUT_URL` → cole a URL de produção do Asaas
+3. Apague a entrada antiga (sandbox)
+4. **Deployments** → último deploy → **Redeploy**
+
+### D. Validação end-to-end (cartão real)
+
+```powershell
+npx supabase functions logs asaas-webhook --tail
+```
+
+Em outra janela, abra `https://app-anac.vercel.app` no anônimo, clique "Adquirir agora", pague Pix de R$ 9,90. Espere ver no log:
+
+```
+[asaas-webhook] event=PAYMENT_CONFIRMED ...
+[asaas-webhook] OK email=... acao=activate active=true ... welcome_email=sent
+```
+
+Confere caixa de e-mail. Clique no link, instala o `AppIter_Setup.exe`, abre o app, digita o e-mail da compra, recebe OTP, entra.
 
 ---
 

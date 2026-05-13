@@ -35,10 +35,11 @@ Thumbs.db
 
 # Supabase CLI local state
 .supabase/
-supabase/.temp/
-supabase/.branches/
 infra/supabase/.temp/
 infra/supabase/.branches/
+
+# Espelho de migrations/functions pro CLI (fonte verdade vive em infra/supabase/)
+/supabase/
 
 # Cache local da licença / estado
 *.cache
