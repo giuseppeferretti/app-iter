@@ -18,7 +18,8 @@ param(
     [string]$Version = "v0.1.0",
     [string]$RepoName = "app-iter",
     [switch]$Public,
-    [string]$InstallerPath = "Output\AppIter_Setup.exe"
+    [string]$InstallerPath = "Output\AppIter_Setup.exe",
+    [string]$TutorialPath = "tutorial_planilha.pdf"
 )
 
 # Não usamos $ErrorActionPreference = "Stop" porque comandos nativos (gh, git)
@@ -43,6 +44,15 @@ if (-not (Test-Path $InstallerPath)) {
 }
 $size = (Get-Item $InstallerPath).Length / 1MB
 Ok ("Instalador: {0:N1} MB ({1})" -f $size, $InstallerPath)
+
+# Tutorial PDF (opcional — se não existe, segue sem)
+$IncluirTutorial = Test-Path $TutorialPath
+if ($IncluirTutorial) {
+    $tsize = (Get-Item $TutorialPath).Length / 1KB
+    Ok ("Tutorial PDF: {0:N0} KB ({1})" -f $tsize, $TutorialPath)
+} else {
+    Write-Host "    Tutorial PDF não encontrado em $TutorialPath — release sem PDF anexo." -ForegroundColor Yellow
+}
 
 $user = & gh api user --jq .login
 if (-not $user) { Fail "Não consegui pegar seu usuário do GitHub." }
@@ -75,22 +85,29 @@ Step "Fazendo push do branch main"
 if ($LASTEXITCODE -ne 0) { Fail "Falha no push." }
 Ok "Push concluído"
 
-# 4. Cria/atualiza a release
+# 4. Cria/atualiza a release. Faz upload do .exe + PDF tutorial (se existir).
 Step "Criando release $Version"
+
+# Monta lista de assets
+$assets = @($InstallerPath)
+if ($IncluirTutorial) { $assets += $TutorialPath }
+
 & gh release view $Version --repo $full *> $null
 if ($LASTEXITCODE -eq 0) {
-    Step "Release $Version já existe — fazendo upload do asset (clobber)"
-    & gh release upload $Version $InstallerPath --repo $full --clobber
+    Step "Release $Version já existe — fazendo upload dos assets (clobber)"
+    & gh release upload $Version @assets --repo $full --clobber
 } else {
     $notes = @'
-Primeiro release do App Iter.
+Release do App Iter.
 
 ## Instalação
 1. Baixe o AppIter_Setup.exe abaixo.
 2. Execute. Como é um instalador não-assinado, o Windows SmartScreen mostra um aviso — clique em **Mais informações** > **Executar mesmo assim**.
 3. O app abre na tela de licença. Digite o e-mail que usou no pagamento e receba o código por e-mail.
+
+Veja o `tutorial_planilha.pdf` abaixo pra entender como preencher a planilha.
 '@
-    & gh release create $Version $InstallerPath --repo $full --title "App Iter $Version" --notes $notes
+    & gh release create $Version @assets --repo $full --title "App Iter $Version" --notes $notes
 }
 if ($LASTEXITCODE -ne 0) { Fail "Falha ao criar/atualizar release." }
 Ok "Release publicada"

@@ -36,6 +36,8 @@ const WELCOME_EMAIL_FROM = Deno.env.get("WELCOME_EMAIL_FROM") ??
   "App Iter <onboarding@resend.dev>";
 const DOWNLOAD_URL = Deno.env.get("APP_DOWNLOAD_URL") ??
   "https://github.com/giuseppeferretti/app-iter/releases/latest/download/AppIter_Setup.exe";
+const TUTORIAL_URL = Deno.env.get("APP_TUTORIAL_URL") ??
+  "https://github.com/giuseppeferretti/app-iter/releases/latest/download/tutorial_planilha.pdf";
 const SUPPORT_EMAIL = Deno.env.get("SUPPORT_EMAIL") ?? "suporte.iter@gmail.com";
 
 const ASAAS_API_BASE = ASAAS_ENV === "production"
@@ -204,8 +206,12 @@ function montarEmailHtml(email: string): { subject: string; html: string; text: 
 
       <div style="margin:32px 0;">
         <a href="${DOWNLOAD_URL}"
-           style="display:inline-block;background:#5b5bf0;color:#fff;text-decoration:none;padding:14px 28px;border-radius:8px;font-weight:600;font-size:15px;">
-          Baixar AppIter_Setup.exe
+           style="display:inline-block;background:#5b5bf0;color:#fff;text-decoration:none;padding:14px 28px;border-radius:8px;font-weight:600;font-size:15px;margin-right:10px;">
+          Baixar o App (.exe)
+        </a>
+        <a href="${TUTORIAL_URL}"
+           style="display:inline-block;background:transparent;color:#fff;text-decoration:none;padding:13px 26px;border-radius:8px;font-weight:600;font-size:15px;border:1px solid rgba(255,255,255,0.25);">
+          Baixar o Tutorial (PDF)
         </a>
       </div>
 
@@ -214,6 +220,7 @@ function montarEmailHtml(email: string): { subject: string; html: string; text: 
           Próximos passos
         </div>
         <ol style="margin:0;padding-left:20px;color:rgba(255,255,255,0.78);font-size:14px;line-height:1.7;">
+          <li>Leia o tutorial em PDF (link acima) — ele explica como preencher a planilha de horas.</li>
           <li>Execute o instalador. O Windows pode mostrar um aviso de "editor desconhecido" — clique em <b>Mais informações</b> &rsaquo; <b>Executar mesmo assim</b>.</li>
           <li>Abra o App Iter no menu Iniciar.</li>
           <li>Na tela de licença, digite <b>${email}</b> (o mesmo e-mail que você usou no pagamento).</li>
@@ -235,13 +242,15 @@ function montarEmailHtml(email: string): { subject: string; html: string; text: 
 </html>`;
   const text = `Sua assinatura do App Iter está ativa.
 
-Baixe o aplicativo: ${DOWNLOAD_URL}
+Aplicativo:  ${DOWNLOAD_URL}
+Tutorial:    ${TUTORIAL_URL}
 
 Próximos passos:
-1. Execute o instalador (clique em "Mais informações" > "Executar mesmo assim" se aparecer aviso do Windows).
-2. Abra o App Iter no menu Iniciar.
-3. Na tela de licença, digite ${email} (o e-mail do pagamento).
-4. Cole o código de 6 dígitos que você recebe por e-mail.
+1. Leia o tutorial em PDF (link acima) — ele explica como preencher a planilha de horas.
+2. Execute o instalador (clique em "Mais informações" > "Executar mesmo assim" se aparecer aviso do Windows).
+3. Abra o App Iter no menu Iniciar.
+4. Na tela de licença, digite ${email} (o e-mail do pagamento).
+5. Cole o código de 6 dígitos que você recebe por e-mail.
 
 Suporte: ${SUPPORT_EMAIL}
 `;
