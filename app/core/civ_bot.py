@@ -14,7 +14,8 @@ Tecnica de preenchimento: click → fill("") → fill(valor) → press("Tab")
 Padrão de navegador: opera SEMPRE no navegador já aberto pelo usuário via
 CDP (porta 9222) — definido em app.core.browser. Nunca sobe Chromium próprio.
 """
-from typing import Any, Dict, Optional
+import threading
+from typing import Any, Callable, Dict, Optional
 
 from playwright.async_api import Page, TimeoutError as PWTimeout
 
@@ -26,6 +27,21 @@ from app.core.popup_inspector import (
 )
 
 log = get_logger()
+
+
+class CanceladoPeloUsuario(Exception):
+    """Levantado quando o usuário clica em Cancelar durante um lançamento.
+
+    A tela principal trata e dá break no loop de batch sem marcar como falha.
+    """
+
+
+def _check_cancel(cancel_event: Optional[threading.Event]) -> None:
+    """Verifica se cancelamento foi solicitado e levanta exceção rápida.
+    Chamado entre cada `await` dos preenchimentos pra cortar quase imediato.
+    """
+    if cancel_event is not None and cancel_event.is_set():
+        raise CanceladoPeloUsuario()
 
 
 # ── Cache in-memory pra descobertas dinâmicas (1 batch = 1 conexão Page) ─────
@@ -244,11 +260,16 @@ async def _preencher_destino_com_fallback(page: Page, valor: str) -> str:
 
 
 async def lancar_voo(
-    page: Page, linha: Dict[str, Any], capture: DialogCapture
+    page: Page, linha: Dict[str, Any], capture: DialogCapture,
+    cancel_event: Optional[threading.Event] = None,
 ) -> Dict[str, Any]:
     """
     Preenche o form de CIV com os dados de UMA linha da planilha e clica
     #salvar. Retorna o dict do popup_inspector com o desfecho da acao.
+
+    Se `cancel_event` for fornecido e ficar setado durante a execução, levanta
+    CanceladoPeloUsuario imediatamente — corta o lançamento em andamento sem
+    esperar terminar a linha toda (UX de Cancelar mais responsiva).
     """
     log.info(
         f"Preenchendo linha {linha['linha_planilha']}: "
@@ -269,16 +290,19 @@ async def lancar_voo(
 
     url_inicial = page.url
 
+    _check_cancel(cancel_event)
     # ── 1. Data ─────────────────────────────────────────────────────────────
     estrategia_data = await _preencher_mascarado(
         page, "#DataRegistroVoo", linha["data"]
     )
 
+    _check_cancel(cancel_event)
     # ── 2. Pousos ───────────────────────────────────────────────────────────
     estrategia_pousos = await _preencher_mascarado(
         page, 'input[name="txtPousos"]', linha["pousos"]
     )
 
+    _check_cancel(cancel_event)
     # ── 3. Função (dinâmica via mapa) ───────────────────────────────────────
     mapa = await _descobrir_mapa_funcao(page)
     funcao_label = linha["funcao"]
@@ -325,10 +349,12 @@ async def lancar_voo(
             page, 'textarea[name="txtObservacao"]', linha["obs"], tab=False
         )
 
+    _check_cancel(cancel_event)
     # ── 4. Matrícula (onblur dispara exibeHabilitacao AJAX) ─────────────────
     await _preencher_texto(page, 'input[name="txtMatricula"]', linha["matricula"])
     await page.wait_for_timeout(config.WAIT_APOS_BLUR_MATRICULA)
 
+    _check_cancel(cancel_event)
     # ── 5. Origem ───────────────────────────────────────────────────────────
     origem_campo = page.locator('input[name="txtOrigem"]').first
     await origem_campo.click()
@@ -336,36 +362,42 @@ async def lancar_voo(
     await origem_campo.fill(linha["origem"])
     await origem_campo.press("Tab")
 
+    _check_cancel(cancel_event)
     # ── 6. Destino (com fallback) ───────────────────────────────────────────
     seletor_destino = await _preencher_destino_com_fallback(page, linha["destino"])
 
     # ── 7. Diurno ───────────────────────────────────────────────────────────
     estrategia_diurno = ""
     if linha.get("diurno"):
+        _check_cancel(cancel_event)
         estrategia_diurno = await _preencher_mascarado(
             page, 'input[name="txtDiurno"]', linha["diurno"]
         )
 
     # ── 8. Noturno ──────────────────────────────────────────────────────────
     if linha.get("noturno"):
+        _check_cancel(cancel_event)
         await _preencher_mascarado(
             page, 'input[name="txtNoturno"]', linha["noturno"]
         )
 
     # ── 9. Navegação ────────────────────────────────────────────────────────
     if linha.get("navegacao"):
+        _check_cancel(cancel_event)
         await _preencher_mascarado(
             page, 'input[name="txtNavegacao"]', linha["navegacao"]
         )
 
     # ── 10. Instrumento Real ────────────────────────────────────────────────
     if linha.get("instrumento"):
+        _check_cancel(cancel_event)
         await _preencher_mascarado(
             page, 'input[name="txtInstrumento"]', linha["instrumento"]
         )
 
     # ── 11. Sob Capota (descobre seletor) ───────────────────────────────────
     if linha.get("sob_capota"):
+        _check_cancel(cancel_event)
         sel_capota = await _resolver_seletor_capota(page)
         if sel_capota:
             await _preencher_mascarado(page, sel_capota, linha["sob_capota"])
@@ -376,9 +408,12 @@ async def lancar_voo(
 
     # ── 12. Milhas de navegação ─────────────────────────────────────────────
     if linha.get("milhas_nav"):
+        _check_cancel(cancel_event)
         await _preencher_mascarado(
             page, 'input[name="txtQtMilhaNavegacao"]', linha["milhas_nav"]
         )
+
+    _check_cancel(cancel_event)
 
     log.info(
         f"  Campos preenchidos (data={estrategia_data}, pousos={estrategia_pousos}, "

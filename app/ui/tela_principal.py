@@ -24,7 +24,7 @@ from playwright.async_api import async_playwright
 
 from app.core import browser as br_mod
 from app.core import config
-from app.core.civ_bot import lancar_voo
+from app.core.civ_bot import lancar_voo, CanceladoPeloUsuario
 from app.core.excel_reader import validar_planilha
 from app.core.logger import set_ui_callback, get_logger
 from app.core.popup_inspector import instalar_dialog_handler
@@ -796,7 +796,15 @@ def construir(page: ft.Page, ao_concluir: Callable[[int, int, float], None]) -> 
                     capture.eventos.clear()
 
                     try:
-                        resposta = await lancar_voo(page_pw, linha, capture)
+                        resposta = await lancar_voo(
+                            page_pw, linha, capture, cancel_event=cancelar_event,
+                        )
+                    except CanceladoPeloUsuario:
+                        log.warning(
+                            f"Cancelado pelo usuário durante a linha "
+                            f"{linha['linha_planilha']}."
+                        )
+                        break
                     except Exception as exc:
                         log.error(
                             f"Falha no preenchimento da linha "
@@ -1014,51 +1022,164 @@ def construir(page: ft.Page, ao_concluir: Callable[[int, int, float], None]) -> 
         threading.Thread(target=thread_target, daemon=True).start()
 
     def iniciar(_=None):
-        """Handler do botão 'INICIAR SESSÃO': abre pre-flight modal antes de
-        de fato disparar o bot. O usuário pode abrir o site SACI pra autenticar
-        e só prosseguir quando estiver pronto."""
+        """Handler do botão 'INICIAR SESSÃO': abre pre-flight modal.
+
+        Fluxo novo (UX explícita):
+          - Status "Aguardando você abrir o SACI" + botão "Abrir SACI" ativo
+          - Clica "Abrir SACI" → o app detecta o navegador certo (Brave, Chrome
+            etc.) e abre na porta CDP com a URL do SACI já carregada
+          - Polling em background atualiza o status:
+              · "Abrindo navegador..." → "Navegador pronto, faça login..."
+              · "SACI detectado" (verde) → habilita "Prosseguir"
+          - Botão "Prosseguir" começa DESABILITADO. Só ativa quando o polling
+            confirma CDP + aba do SACI carregada.
+        """
         if not estado["caminho"] or not estado["lancamentos"]:
             return
         if estado["rodando"]:
             return
 
-        def _abrir_site(_):
-            # `page.launch_url` é coroutine no Flet 0.85 — chamada sem await
-            # numa handler síncrono não executa. webbrowser.open é síncrono e
-            # abre no navegador padrão do sistema.
-            webbrowser.open(config.URL_CIV)
-            # Dialog continua aberto pro usuário voltar e clicar "Prosseguir"
+        # Estado interno do pre-flight
+        preflight = {
+            "polling_event": threading.Event(),  # set = pare de pollar
+            "saci_pronto": False,
+        }
+
+        # Status texto + dot pulsante (refletem estado do polling)
+        status_dot = ft.Container(
+            width=10, height=10,
+            bgcolor=COR_FG_DIM,
+            border_radius=5,
+        )
+        status_label = ft.Text(
+            "Aguardando você abrir o SACI",
+            size=13,
+            color=COR_FG_MUTED,
+            weight=ft.FontWeight.W_500,
+        )
+
+        botao_abrir = ft.OutlinedButton(content="Abrir SACI")
+        botao_prosseguir = ft.ElevatedButton(
+            content="Prosseguir",
+            bgcolor=COR_FG_DIM,
+            color="#ffffff",
+            disabled=True,
+        )
+        botao_cancelar_dlg = ft.TextButton(content="Cancelar")
+
+        def _atualizar_status(texto: str, cor: str, pronto: bool) -> None:
+            try:
+                status_dot.bgcolor = cor
+                status_label.value = texto
+                status_label.color = cor if pronto else COR_FG_MUTED
+                botao_prosseguir.disabled = not pronto
+                botao_prosseguir.bgcolor = COR_PRIMARY if pronto else COR_FG_DIM
+                page.update()
+            except Exception:
+                pass
+
+        def _polling_loop():
+            """Roda em thread separada. Atualiza status a cada 1s."""
+            while not preflight["polling_event"].is_set():
+                try:
+                    cdp_ok = br_mod.cdp_disponivel()
+                    saci_ok = cdp_ok and br_mod.saci_aberto()
+                    if saci_ok and not preflight["saci_pronto"]:
+                        preflight["saci_pronto"] = True
+                        _atualizar_status(
+                            "SACI detectado — pronto para iniciar",
+                            COR_SUCCESS, True,
+                        )
+                    elif cdp_ok and not saci_ok:
+                        _atualizar_status(
+                            "Navegador pronto — abra o SACI e autentique",
+                            COR_WARMTH, False,
+                        )
+                        preflight["saci_pronto"] = False
+                    elif not cdp_ok and preflight["saci_pronto"]:
+                        # Navegador foi fechado
+                        preflight["saci_pronto"] = False
+                        _atualizar_status(
+                            "Aguardando você abrir o SACI",
+                            COR_FG_DIM, False,
+                        )
+                except Exception as exc:
+                    log.debug(f"polling preflight: {exc}")
+                # Espera 1s OU sai imediatamente se o event for setado
+                preflight["polling_event"].wait(timeout=1.0)
+
+        # Já tá pronto? Sim → habilita Prosseguir de cara.
+        try:
+            if br_mod.cdp_disponivel() and br_mod.saci_aberto():
+                preflight["saci_pronto"] = True
+                _atualizar_status(
+                    "SACI detectado — pronto para iniciar", COR_SUCCESS, True,
+                )
+        except Exception:
+            pass
+
+        threading.Thread(target=_polling_loop, daemon=True).start()
+
+        def _abrir_saci(_):
+            """Abre o navegador na porta CDP com o SACI já carregado."""
+            _atualizar_status("Abrindo navegador...", COR_WARMTH, False)
+            def _abrir_em_thread():
+                try:
+                    nav = br_mod.abrir_navegador_com_cdp()
+                    log.info(f"Pre-flight: navegador {nav.nome} aberto via CDP.")
+                except Exception as exc:
+                    log.error(f"Falha ao abrir navegador via CDP: {exc}")
+                    _atualizar_status(f"Erro: {exc}", COR_ERROR, False)
+            threading.Thread(target=_abrir_em_thread, daemon=True).start()
 
         def _prosseguir(_):
+            preflight["polling_event"].set()
             page.pop_dialog()
             page.update()
             _executar_inicio()
 
         def _cancelar(_):
+            preflight["polling_event"].set()
             page.pop_dialog()
             page.update()
+
+        botao_abrir.on_click = _abrir_saci
+        botao_prosseguir.on_click = _prosseguir
+        botao_cancelar_dlg.on_click = _cancelar
 
         dlg = ft.AlertDialog(
             modal=True,
             title=ft.Text(
-                "Você está autenticado no SACI?",
+                "Sessão SACI",
                 size=18, weight=ft.FontWeight.W_700,
             ),
-            content=ft.Text(
-                "Clique em 'Prosseguir' quando já estiver autenticado no site "
-                "da ANAC. Se ainda não estiver, clique em 'Site' para abrir o "
-                "SACI no seu navegador.",
-                size=13, color=COR_FG_MUTED,
+            content=ft.Column(
+                tight=True,
+                spacing=14,
+                controls=[
+                    ft.Text(
+                        "Antes de iniciar, abra o site da ANAC pelo botão "
+                        "abaixo (o app vai usar o navegador que você abrir, "
+                        "preservando sua sessão).",
+                        size=13, color=COR_FG_MUTED,
+                    ),
+                    ft.Container(
+                        bgcolor=COR_CARD_ALT,
+                        border=ft.Border.all(1, COR_BORDER),
+                        border_radius=10,
+                        padding=ft.Padding(14, 12, 14, 12),
+                        content=ft.Row(
+                            spacing=10,
+                            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                            controls=[status_dot, status_label],
+                        ),
+                    ),
+                ],
             ),
             actions=[
-                ft.TextButton(content="Cancelar", on_click=_cancelar),
-                ft.OutlinedButton(content="Site", on_click=_abrir_site),
-                ft.ElevatedButton(
-                    content="Prosseguir",
-                    on_click=_prosseguir,
-                    bgcolor=COR_PRIMARY,
-                    color="#ffffff",
-                ),
+                botao_cancelar_dlg,
+                botao_abrir,
+                botao_prosseguir,
             ],
         )
         try:
@@ -1066,7 +1187,7 @@ def construir(page: ft.Page, ao_concluir: Callable[[int, int, float], None]) -> 
             page.update()
         except Exception as exc:
             log.error(f"Falha ao abrir pre-flight dialog: {exc}")
-            # Fallback: dispara o bot direto
+            preflight["polling_event"].set()
             _executar_inicio()
 
     botao_iniciar.on_click = iniciar

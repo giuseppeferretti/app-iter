@@ -71,13 +71,14 @@ LARGURAS = {
     "SOB_CAPOTA": 11,
 }
 
-# Linha 2 — exemplo realista pra mostrar formato
+# Linha 3 — exemplo completo (incentiva o piloto a preencher todos os campos
+# de tempo que tiver pra registrar; campos opcionais podem ficar vazios)
 EXEMPLO = {
     "DATA": "12/03/2026", "POUSOS": "1", "FUNCAO": "Piloto em Comando",
-    "ANAC_ALUNO": "", "CURSO_COMERCIAL": "", "OBSERVACOES": "Translado",
-    "MILHAS_NAV": "", "MATRICULA": "PTBIC", "ORIGEM": "SBSP",
-    "DESTINO": "SBKP", "DIURNO": "00:45", "NOTURNO": "", "NAVEGACAO": "",
-    "INSTRUMENTO": "", "SOB_CAPOTA": "",
+    "ANAC_ALUNO": "", "CURSO_COMERCIAL": "Não", "OBSERVACOES": "Translado",
+    "MILHAS_NAV": "50", "MATRICULA": "PTBIC", "ORIGEM": "SBSP",
+    "DESTINO": "SBKP", "DIURNO": "00:45", "NOTURNO": "00:30",
+    "NAVEGACAO": "01:50", "INSTRUMENTO": "00:30", "SOB_CAPOTA": "00:30",
 }
 
 
@@ -89,7 +90,7 @@ def _border(cor: str = COR_BORDER) -> Border:
 def main() -> None:
     wb = Workbook()
     ws = wb.active
-    ws.title = "Plan1"
+    ws.title = "Voos"
 
     nomes = [c[0] for c in COLUNAS]
 

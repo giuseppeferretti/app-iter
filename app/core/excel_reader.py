@@ -326,8 +326,8 @@ def validar_planilha(caminho: str) -> tuple[List[Dict[str, Any]], List[ErroValid
                     erros.append(ErroValidacao(linha_num, col, raw, str(exc)))
                     valido = False
 
-        # ── obs ─────────────────────────────────────────────────────────────
-        registro["obs"] = _opt(row, df_cols, "obs")
+        # ── obs (aceita tanto "OBSERVACOES" do novo template quanto "OBS" legado)
+        registro["obs"] = _opt(row, df_cols, "observacoes") or _opt(row, df_cols, "obs")
 
         # ── milhas_nav ──────────────────────────────────────────────────────
         milhas_raw = _opt(row, df_cols, "milhas_nav")
