@@ -1,68 +1,89 @@
 """
 Gera o template.xlsx oficial do App Iter.
 
-Schema (mesmo lido por app/core/excel_reader.py):
-  Obrigatórios:
-    data       — DD/MM/AAAA
-    pousos     — 1 a 99
-    matricula  — até 5 chars (ex: PTVZZ)
-    origem     — ICAO 4 chars
-    destino    — ICAO 4 chars
-    horas      — HH:MM ou decimal
+Schema novo de 15 colunas — ordem espelha a tela SACI (bloco "Dados do vôo"
+seguido de "Tempo de vôo"). A coluna FUNCAO tem dropdown de validação com as
+7 opções do SACI; CURSO_COMERCIAL tem dropdown Sim/Não.
 
-  Opcionais:
-    obs           — texto livre
-    milhas_nav    — número
-    horas_nav     — HH:MM ou decimal
-
-Saída: app/assets/template.xlsx (5 linhas de exemplo realistas, 1 aba "Plan1")
-
-Rodar: `python app/assets/gen_template.py`
+Saída: app/assets/template.xlsx
+Rodar: `python -m app.assets.gen_template`
 """
 from pathlib import Path
 
 from openpyxl import Workbook
+from openpyxl.comments import Comment
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
+from openpyxl.worksheet.datavalidation import DataValidation
+
+from app.core.config import FUNCOES_VALIDAS
 
 
-COR_HEADER_BG   = "0B0B0E"
-COR_HEADER_FG   = "F5ECD8"
-COR_PRIMARY     = "2B6BFF"
-COR_BORDER      = "262630"
-COR_LINHA_BG    = "FFFFFF"
-COR_OPCIONAL_BG = "F5F2EA"
+# ── Paleta (mesma do app — preto + bege quente) ──────────────────────────────
+COR_HEADER_BG       = "0B0B0E"  # preto Iter
+COR_HEADER_FG       = "F5ECD8"  # bege quente
+COR_PRIMARY         = "2B6BFF"  # indigo (opcional)
+COR_BORDER          = "262630"  # cinza escuro
+COR_GROUP_BG        = "1A1A22"  # preto suave (header de grupo)
+COR_OBRIG_TEXT      = "F5ECD8"  # bege
+COR_OPCIONAL_TEXT   = "C9D2E0"  # cinza claro
 
-COLUNAS_OBRIGATORIAS = [
-    ("DATA",       "DD/MM/AAAA"),
-    ("POUSOS",     "1-99"),
-    ("MATRICULA",  "Ex: PTBIC"),
-    ("ORIGEM",     "ICAO 4 letras"),
-    ("DESTINO",    "ICAO 4 letras"),
-    ("HORAS",      "HH:MM"),
+# ── Schema (ordem espelha a tela SACI) ───────────────────────────────────────
+# (nome, descrição_tooltip, grupo, obrigatória?)
+COLUNAS = [
+    # Bloco "Dados do vôo"
+    ("DATA",            "DD/MM/AAAA", "Dados do vôo", True),
+    ("POUSOS",          "Inteiro 1-99", "Dados do vôo", True),
+    ("FUNCAO",          "Escolha uma opção do dropdown", "Dados do vôo", True),
+    ("ANAC_ALUNO",      "Código ANAC do aluno (8 dígitos). Obrigatório se "
+                        "Função = Instrutor Voo ou Instrutor de voo em solo. "
+                        "Vazio nas demais Funções.", "Dados do vôo", False),
+    ("CURSO_COMERCIAL", "Sim/Não. Marque Sim apenas se Função = Piloto em "
+                        "Comando E o voo foi dentro de curso de piloto "
+                        "comercial aprovado pela ANAC com instrutor a bordo.",
+                        "Dados do vôo", False),
+    ("OBSERVACOES",     "Texto livre opcional", "Dados do vôo", False),
+    ("MILHAS_NAV",      "Milhas náuticas (inteiro)", "Dados do vôo", False),
+    # Bloco "Tempo de vôo"
+    ("MATRICULA",       "Matrícula da aeronave (até 5 chars, ex.: PTBIC)",
+                        "Tempo de vôo", True),
+    ("ORIGEM",          "Aeródromo de origem — ICAO 4 letras (ex.: SBSP)",
+                        "Tempo de vôo", True),
+    ("DESTINO",         "Aeródromo de destino — ICAO 4 letras",
+                        "Tempo de vôo", True),
+    ("DIURNO",          "HH:MM. Pelo menos um de Diurno ou Noturno deve estar "
+                        "preenchido.", "Tempo de vôo", False),
+    ("NOTURNO",         "HH:MM. Pelo menos um de Diurno ou Noturno deve estar "
+                        "preenchido.", "Tempo de vôo", False),
+    ("NAVEGACAO",       "HH:MM — tempo de navegação", "Tempo de vôo", False),
+    ("INSTRUMENTO",     "HH:MM — Instrumento Real (IFR efetivo)",
+                        "Tempo de vôo", False),
+    ("SOB_CAPOTA",      "HH:MM — instrução IFR simulada sob capota",
+                        "Tempo de vôo", False),
 ]
-COLUNAS_OPCIONAIS = [
-    ("OBS",        "Observação livre"),
-    ("MILHAS_NAV", "Milhas náuticas"),
-    ("HORAS_NAV",  "HH:MM"),
-]
 
-EXEMPLOS = [
-    {
-        "DATA": "12/03/2026", "POUSOS": "1", "MATRICULA": "PTBIC",
-        "ORIGEM": "SBSP", "DESTINO": "SBKP", "HORAS": "00:45",
-        "OBS": "Translado", "MILHAS_NAV": "", "HORAS_NAV": "",
-    },
-]
+# Larguras por coluna (ajustadas pro nome + tipo de dado)
+LARGURAS = {
+    "DATA": 12, "POUSOS": 8, "FUNCAO": 26, "ANAC_ALUNO": 12,
+    "CURSO_COMERCIAL": 16, "OBSERVACOES": 30, "MILHAS_NAV": 11,
+    "MATRICULA": 11, "ORIGEM": 9, "DESTINO": 9,
+    "DIURNO": 9, "NOTURNO": 9, "NAVEGACAO": 10, "INSTRUMENTO": 12,
+    "SOB_CAPOTA": 11,
+}
+
+# Linha 2 — exemplo realista pra mostrar formato
+EXEMPLO = {
+    "DATA": "12/03/2026", "POUSOS": "1", "FUNCAO": "Piloto em Comando",
+    "ANAC_ALUNO": "", "CURSO_COMERCIAL": "", "OBSERVACOES": "Translado",
+    "MILHAS_NAV": "", "MATRICULA": "PTBIC", "ORIGEM": "SBSP",
+    "DESTINO": "SBKP", "DIURNO": "00:45", "NOTURNO": "", "NAVEGACAO": "",
+    "INSTRUMENTO": "", "SOB_CAPOTA": "",
+}
 
 
-def _aplicar_borda(cell, cor=COR_BORDER):
-    cell.border = Border(
-        left=Side(style="thin", color=cor),
-        right=Side(style="thin", color=cor),
-        top=Side(style="thin", color=cor),
-        bottom=Side(style="thin", color=cor),
-    )
+def _border(cor: str = COR_BORDER) -> Border:
+    side = Side(style="thin", color=cor)
+    return Border(left=side, right=side, top=side, bottom=side)
 
 
 def main() -> None:
@@ -70,69 +91,110 @@ def main() -> None:
     ws = wb.active
     ws.title = "Plan1"
 
-    todas_colunas = COLUNAS_OBRIGATORIAS + COLUNAS_OPCIONAIS
-    nomes = [c[0] for c in todas_colunas]
-    larguras = {
-        "DATA": 14, "POUSOS": 9, "MATRICULA": 12, "ORIGEM": 10,
-        "DESTINO": 10, "HORAS": 8, "OBS": 32, "MILHAS_NAV": 12, "HORAS_NAV": 11,
-    }
+    nomes = [c[0] for c in COLUNAS]
 
-    # ── Cabeçalhos (linha 1) ──────────────────────────────────────────────
-    header_font = Font(
-        name="Segoe UI", size=11, bold=True, color=COR_HEADER_FG,
-    )
+    # ── Linha 1: grupos visuais ("Dados do vôo" / "Tempo de vôo") ───────────
+    # Acha as faixas de colunas pra cada grupo e faz merge
+    grupo_atual = None
+    inicio = 1
+    for col_idx, (_nome, _tip, grupo, _ob) in enumerate(COLUNAS, start=1):
+        if grupo != grupo_atual:
+            if grupo_atual is not None:
+                _aplicar_header_grupo(ws, inicio, col_idx - 1, grupo_atual)
+            inicio = col_idx
+            grupo_atual = grupo
+    # Último grupo
+    _aplicar_header_grupo(ws, inicio, len(COLUNAS), grupo_atual)
+    ws.row_dimensions[1].height = 22
+
+    # ── Linha 2: cabeçalhos das colunas ─────────────────────────────────────
+    header_font = Font(name="Segoe UI", size=11, bold=True, color=COR_HEADER_FG)
     header_fill = PatternFill(
         start_color=COR_HEADER_BG, end_color=COR_HEADER_BG, fill_type="solid",
     )
-    header_fill_opcional = PatternFill(
-        start_color=COR_PRIMARY, end_color=COR_PRIMARY, fill_type="solid",
-    )
-    align_center = Alignment(horizontal="center", vertical="center")
-
-    n_obrig = len(COLUNAS_OBRIGATORIAS)
-    for col_idx, (nome, _exemplo) in enumerate(todas_colunas, start=1):
-        cell = ws.cell(row=1, column=col_idx, value=nome)
-        cell.font = header_font
+    align_center = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    for col_idx, (nome, tooltip, _grp, obrig) in enumerate(COLUNAS, start=1):
+        cell = ws.cell(row=2, column=col_idx, value=nome)
+        cell.font = Font(
+            name="Segoe UI", size=11, bold=True,
+            color=COR_OBRIG_TEXT if obrig else COR_OPCIONAL_TEXT,
+        )
+        cell.fill = header_fill
         cell.alignment = align_center
-        if col_idx <= n_obrig:
-            cell.fill = header_fill
-        else:
-            cell.fill = header_fill_opcional
-        _aplicar_borda(cell)
-        ws.column_dimensions[get_column_letter(col_idx)].width = larguras[nome]
+        cell.border = _border()
+        cell.comment = Comment(
+            f"{tooltip}\n\n{'[Obrigatório]' if obrig else '[Opcional]'}",
+            "App Iter",
+        )
+        ws.column_dimensions[get_column_letter(col_idx)].width = LARGURAS[nome]
+    ws.row_dimensions[2].height = 26
 
-    ws.row_dimensions[1].height = 24
-
-    # Dicas de formato vão como comentário (tooltip) em cada cabeçalho —
-    # assim o usuário vê o exemplo ao passar o mouse, mas a linha não é
-    # parseada como dado e não gera "erros" na validação.
-    from openpyxl.comments import Comment
-    for col_idx, (_nome, exemplo) in enumerate(todas_colunas, start=1):
-        cell = ws.cell(row=1, column=col_idx)
-        cell.comment = Comment(f"Formato: {exemplo}", "App Iter")
-
-    # ── Linhas 2+: exemplos reais ────────────────────────────────────────
+    # ── Linha 3: exemplo preenchido ─────────────────────────────────────────
     body_font = Font(name="Segoe UI", size=11)
     align_left = Alignment(horizontal="left", vertical="center")
     align_center_body = Alignment(horizontal="center", vertical="center")
-    for r_idx, exemplo in enumerate(EXEMPLOS, start=2):
-        for col_idx, nome in enumerate(nomes, start=1):
-            val = exemplo.get(nome, "")
-            cell = ws.cell(row=r_idx, column=col_idx, value=val)
-            cell.font = body_font
-            if nome == "OBS":
-                cell.alignment = align_left
-            else:
-                cell.alignment = align_center_body
-            _aplicar_borda(cell)
+    for col_idx, nome in enumerate(nomes, start=1):
+        val = EXEMPLO.get(nome, "")
+        cell = ws.cell(row=3, column=col_idx, value=val)
+        cell.font = body_font
+        cell.alignment = align_left if nome == "OBSERVACOES" else align_center_body
+        cell.border = _border()
 
-    # ── Congelar a primeira linha pra rolar mantendo cabeçalho ────────────
-    ws.freeze_panes = "A2"
+    # ── Data validations ────────────────────────────────────────────────────
+    # FUNCAO (coluna 3 = C): dropdown com as 7 opções
+    funcao_letter = get_column_letter(nomes.index("FUNCAO") + 1)
+    funcao_formula = '"' + ",".join(FUNCOES_VALIDAS) + '"'
+    dv_funcao = DataValidation(
+        type="list", formula1=funcao_formula, allow_blank=True,
+        showDropDown=False,  # False = mostra a setinha
+    )
+    dv_funcao.error = (
+        "Escolha uma das opções: Instrutor Voo, Piloto em Comando, "
+        "Piloto em Instrução, Instrutor de voo em solo, Co-Piloto Single Pilot, "
+        "Co-Piloto Single Pilot com co-piloto por questão regulamentar, "
+        "Co-Piloto Dual Pilot."
+    )
+    dv_funcao.errorTitle = "Função inválida"
+    dv_funcao.prompt = "Clique na seta e escolha uma opção"
+    dv_funcao.promptTitle = "Função a bordo"
+    ws.add_data_validation(dv_funcao)
+    dv_funcao.add(f"{funcao_letter}3:{funcao_letter}1000")
 
-    # ── Salvar ────────────────────────────────────────────────────────────
+    # CURSO_COMERCIAL (coluna E): Sim/Não
+    curso_letter = get_column_letter(nomes.index("CURSO_COMERCIAL") + 1)
+    dv_curso = DataValidation(
+        type="list", formula1='"Sim,Não"', allow_blank=True,
+        showDropDown=False,
+    )
+    dv_curso.error = "Use 'Sim' ou 'Não' (vazio é tratado como 'Não')."
+    dv_curso.errorTitle = "Valor inválido"
+    dv_curso.prompt = "Sim apenas se Função = Piloto em Comando"
+    dv_curso.promptTitle = "Curso comercial"
+    ws.add_data_validation(dv_curso)
+    dv_curso.add(f"{curso_letter}3:{curso_letter}1000")
+
+    # ── Congelar linhas 1+2 pra rolar mantendo cabeçalho ────────────────────
+    ws.freeze_panes = "A3"
+
+    # ── Salvar ──────────────────────────────────────────────────────────────
     destino = Path(__file__).parent / "template.xlsx"
     wb.save(destino)
-    print(f"template.xlsx salvo em {destino}")
+    print(f"template.xlsx salvo em {destino} ({len(COLUNAS)} colunas)")
+
+
+def _aplicar_header_grupo(ws, col_inicio: int, col_fim: int, titulo: str) -> None:
+    """Merge na linha 1 cobrindo as colunas do grupo, com fundo preto suave."""
+    ws.merge_cells(start_row=1, start_column=col_inicio, end_row=1, end_column=col_fim)
+    cell = ws.cell(row=1, column=col_inicio, value=titulo)
+    cell.font = Font(
+        name="Segoe UI", size=10, bold=True, color=COR_HEADER_FG, italic=True,
+    )
+    cell.fill = PatternFill(
+        start_color=COR_GROUP_BG, end_color=COR_GROUP_BG, fill_type="solid",
+    )
+    cell.alignment = Alignment(horizontal="center", vertical="center")
+    # Borda só na célula raiz da merge — visualmente fica OK
+    cell.border = _border()
 
 
 if __name__ == "__main__":
