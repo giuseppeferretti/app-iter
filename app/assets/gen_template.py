@@ -62,23 +62,35 @@ COLUNAS = [
                         "Tempo de vôo", False),
 ]
 
-# Larguras por coluna (ajustadas pro nome + tipo de dado)
+# Larguras por coluna — valores aprovados pelo usuário (Excel auto-fit em
+# 2026-05-14, refletindo o tamanho real do conteúdo de cada coluna).
 LARGURAS = {
-    "DATA": 12, "POUSOS": 8, "FUNCAO": 26, "ANAC_ALUNO": 12,
-    "CURSO_COMERCIAL": 16, "OBSERVACOES": 30, "MILHAS_NAV": 11,
-    "MATRICULA": 11, "ORIGEM": 9, "DESTINO": 9,
-    "DIURNO": 9, "NOTURNO": 9, "NAVEGACAO": 10, "INSTRUMENTO": 12,
-    "SOB_CAPOTA": 11,
+    "DATA": 12.0,
+    "POUSOS": 11.66,
+    "FUNCAO": 26.0,
+    "ANAC_ALUNO": 16.22,
+    "CURSO_COMERCIAL": 21.0,
+    "OBSERVACOES": 30.0,
+    "MILHAS_NAV": 14.33,
+    "MATRICULA": 14.11,
+    "ORIGEM": 9.0,
+    "DESTINO": 13.22,
+    "DIURNO": 9.0,
+    "NOTURNO": 14.44,
+    "NAVEGACAO": 15.89,
+    "INSTRUMENTO": 16.66,
+    "SOB_CAPOTA": 15.11,
 }
 
-# Linha 3 — exemplo completo (incentiva o piloto a preencher todos os campos
-# de tempo que tiver pra registrar; campos opcionais podem ficar vazios)
+# Linha 3 — exemplo enxuto. ICAOs ficam como "ZZZZ" pra deixar claro que é
+# placeholder (o usuário substitui pelos códigos reais). Campos opcionais
+# ficam vazios pra não dar impressão de obrigatoriedade.
 EXEMPLO = {
     "DATA": "12/03/2026", "POUSOS": "1", "FUNCAO": "Piloto em Comando",
     "ANAC_ALUNO": "", "CURSO_COMERCIAL": "Não", "OBSERVACOES": "Translado",
-    "MILHAS_NAV": "50", "MATRICULA": "PTBIC", "ORIGEM": "SBSP",
-    "DESTINO": "SBKP", "DIURNO": "00:45", "NOTURNO": "00:30",
-    "NAVEGACAO": "01:50", "INSTRUMENTO": "00:30", "SOB_CAPOTA": "00:30",
+    "MILHAS_NAV": "50", "MATRICULA": "PTBIC", "ORIGEM": "ZZZZ",
+    "DESTINO": "ZZZZ", "DIURNO": "00:45", "NOTURNO": "00:30",
+    "NAVEGACAO": "00:45", "INSTRUMENTO": "", "SOB_CAPOTA": "",
 }
 
 
