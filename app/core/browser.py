@@ -24,6 +24,7 @@ Public API:
 import asyncio
 import json
 import os
+import socket
 import subprocess
 import urllib.error
 import urllib.request
@@ -38,6 +39,24 @@ from app.core import config
 from app.core.logger import get_logger
 
 log = get_logger()
+
+# ── Estado runtime: porta CDP em uso ─────────────────────────────────────────
+# Atualizada por abrir_navegador_com_cdp() e por descoberta automática.
+# UI consulta via get_porta_ativa() — se ninguém setou ainda, retorna a
+# primeira porta da lista de tentativas (default 9222).
+_porta_ativa: Optional[int] = None
+
+
+def get_porta_ativa() -> int:
+    """Porta CDP atualmente em uso pelo app (ou a preferencial se nada ainda)."""
+    return _porta_ativa or config.CDP_PORTAS_TENTATIVAS[0]
+
+
+def _set_porta_ativa(p: int) -> None:
+    global _porta_ativa
+    if _porta_ativa != p:
+        log.info(f"Porta CDP ativa: {p}")
+        _porta_ativa = p
 
 
 @dataclass
@@ -165,32 +184,108 @@ def _ler_cdp_version(porta: int, timeout: float = 1.0) -> Optional[dict]:
         return None
 
 
-def cdp_disponivel(porta: int | None = None) -> bool:
-    """Check leve (~1s) usado pelo polling da UI."""
-    p = porta or config.CDP_PORTA
-    return _ler_cdp_version(p, timeout=0.8) is not None
+def _porta_em_uso_tcp(porta: int) -> bool:
+    """True se algo já está usando essa porta TCP (não necessariamente CDP).
+    Usado pra detectar conflitos com OUTROS apps/automações antes de abrir
+    o navegador, pra não trombar com 'Chrome --remote-debugging-port=9222'
+    de outro projeto rodando paralelo.
+
+    Implementação: tenta fazer bind() em (127.0.0.1, porta). Se o SO recusa
+    com EADDRINUSE/WSAEADDRINUSE, está em uso. Robusto contra problemas de
+    backlog/listen que afetam abordagens baseadas em connect().
+    """
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        s.bind(("127.0.0.1", porta))
+        return False  # bind teve sucesso → porta livre
+    except OSError:
+        return True  # EADDRINUSE ou similar → porta ocupada
+    finally:
+        s.close()
 
 
-def saci_aberto(porta: int | None = None) -> bool:
-    """
-    Retorna True se há uma aba CDP cuja URL aponta pro SACI.
-    Não verifica login (a sessão é cookie-based — não dá pra detectar via
-    CDP sem fazer request autenticado). UI confia que se o usuário abriu
-    a URL e ela carregou, ele se autenticou.
-    """
-    p = porta or config.CDP_PORTA
+def _ler_abas_cdp(porta: int) -> list[dict]:
+    """GET /json (lista de abas). Retorna [] em qualquer falha."""
     try:
         with urllib.request.urlopen(
-            f"http://127.0.0.1:{p}/json", timeout=0.8
+            f"http://127.0.0.1:{porta}/json", timeout=0.8
         ) as resp:
-            abas = json.loads(resp.read().decode("utf-8"))
+            return json.loads(resp.read().decode("utf-8"))
     except Exception:
+        return []
+
+
+def _porta_eh_nossa(porta: int) -> bool:
+    """True se a porta hospeda CDP COM uma aba do SACI aberta.
+    Heurística: se tem SACI carregado, assumimos que é a nossa sessão.
+    """
+    if _ler_cdp_version(porta, 0.5) is None:
         return False
-    for aba in abas:
+    for aba in _ler_abas_cdp(porta):
         url = (aba.get("url") or "").lower()
         if "sistemas.anac.gov.br" in url or "saci" in url:
             return True
     return False
+
+
+def descobrir_porta_cdp_nossa() -> Optional[int]:
+    """
+    Procura entre as portas tentativas qual tem CDP com aba do SACI aberta.
+    Se achar, retorna a porta e seta como ativa. Senão None.
+    """
+    for p in config.CDP_PORTAS_TENTATIVAS:
+        if _porta_eh_nossa(p):
+            _set_porta_ativa(p)
+            log.info(f"Sessão SACI já existente detectada em CDP porta {p}.")
+            return p
+    return None
+
+
+def escolher_porta_livre() -> int:
+    """
+    Retorna a primeira porta da lista de tentativas que NÃO está ocupada.
+    Útil quando vamos ABRIR o navegador pela primeira vez (ou substituir
+    uma sessão SACI antiga). Loga warning se a preferencial está ocupada.
+    """
+    preferida = config.CDP_PORTAS_TENTATIVAS[0]
+    for p in config.CDP_PORTAS_TENTATIVAS:
+        if not _porta_em_uso_tcp(p):
+            if p != preferida:
+                log.warning(
+                    f"Porta {preferida} já está em uso (outra automação ou "
+                    f"navegador?). Usando porta backup {p}."
+                )
+            else:
+                log.info(f"Porta CDP {p} livre.")
+            return p
+    raise RuntimeError(
+        f"Todas as portas {config.CDP_PORTAS_TENTATIVAS} estão ocupadas. "
+        "Feche alguma automação rodando e tente de novo."
+    )
+
+
+def cdp_disponivel(porta: int | None = None) -> bool:
+    """Check leve (~1s) usado pelo polling da UI.
+    Se nenhuma porta for fornecida e ainda não temos porta ativa, vasculha
+    as portas tentativas — pode ter achado o SACI em alguma alternativa.
+    """
+    if porta is not None:
+        return _ler_cdp_version(porta, timeout=0.8) is not None
+
+    if _porta_ativa is not None:
+        return _ler_cdp_version(_porta_ativa, timeout=0.8) is not None
+
+    # Sem porta ativa ainda — varre tentativas procurando SACI nossa
+    achada = descobrir_porta_cdp_nossa()
+    return achada is not None
+
+
+def saci_aberto(porta: int | None = None) -> bool:
+    """
+    True se há aba CDP carregada no SACI na porta indicada (ou na ativa).
+    """
+    p = porta if porta is not None else get_porta_ativa()
+    return _porta_eh_nossa(p)
 
 
 def abrir_navegador_com_cdp(
@@ -199,32 +294,35 @@ def abrir_navegador_com_cdp(
     forcar_perfil_alternativo: bool = False,
 ) -> NavegadorInfo:
     """
-    Abre o navegador na porta CDP com a URL do SACI já carregada.
+    Abre o navegador na PRIMEIRA PORTA LIVRE da lista de tentativas com a URL
+    do SACI carregada. Seleção dinâmica resolve conflito com outras automações
+    que usam CDP na mesma máquina.
 
     Lógica:
-      - Se já há CDP rodando na porta → retorna o navegador atual sem fazer nada.
-      - Se o navegador escolhido está rodando MAS sem CDP → abre uma SEGUNDA
-        instância usando user-data-dir alternativo (não toca na instância do
-        usuário). O usuário fecha a janela antiga ou trabalha nas duas.
-      - Se o navegador NÃO está rodando → abre normal com o perfil real do
-        usuário (preserva sessões salvas).
-
-    `forcar_perfil_alternativo=True` força o user-data-dir paralelo mesmo se
-    o navegador não estiver rodando — útil pra evitar conflitos.
-
-    Retorna o NavegadorInfo usado.
+      - Se já há CDP **nosso** (com SACI) em alguma porta → reusa, sem reabrir.
+      - Senão, escolhe a primeira porta LIVRE (não ocupada por nada) e abre lá.
+      - Se o navegador já está rodando sem CDP → abre uma instância paralela
+        usando user-data-dir auxiliar (não toca na sua sessão original).
     """
-    if cdp_disponivel():
+    # 1. Já temos sessão SACI rodando em alguma porta CDP?
+    porta_existente = descobrir_porta_cdp_nossa()
+    if porta_existente is not None:
         nav = _navegador_rodando() or _candidatos_navegadores()[0]
-        log.info(f"CDP já ativo na porta {config.CDP_PORTA} ({nav.nome}). OK.")
+        log.info(
+            f"Reusando sessão SACI já existente: {nav.nome} CDP porta {porta_existente}"
+        )
         return nav
 
+    # 2. Escolhe navegador + porta livre
     nav = navegador or detectar_navegador()
     if nav is None:
         raise RuntimeError(
             "Nenhum navegador compatível encontrado (Chrome, Brave, Edge ou Opera). "
             "Instale um deles e tente novamente."
         )
+
+    porta = escolher_porta_livre()
+    _set_porta_ativa(porta)
 
     ja_rodando = _navegador_rodando() is not None
     usar_perfil_alt = forcar_perfil_alternativo or ja_rodando
@@ -233,19 +331,20 @@ def abrir_navegador_com_cdp(
         _CDP_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
         user_data = _CDP_PROFILE_DIR
         log.info(
-            f"Abrindo {nav.nome} em perfil alternativo (instância paralela): "
-            f"{user_data}. Você vai precisar fazer login no SACI nesta janela."
+            f"Abrindo {nav.nome} em perfil alternativo (porta CDP {porta}, "
+            f"instância paralela): {user_data}. Você vai precisar fazer login "
+            "no SACI nesta janela."
         )
     else:
         user_data = nav.user_data_dir
         log.info(
-            f"Abrindo {nav.nome} com perfil real (sessões/login preservados): "
-            f"{user_data}"
+            f"Abrindo {nav.nome} com perfil real (porta CDP {porta}, "
+            f"sessões/login preservados): {user_data}"
         )
 
     subprocess.Popen([
         str(nav.exe),
-        f"--remote-debugging-port={config.CDP_PORTA}",
+        f"--remote-debugging-port={porta}",
         f"--user-data-dir={user_data}",
         "--no-first-run",
         "--no-default-browser-check",
@@ -256,7 +355,7 @@ def abrir_navegador_com_cdp(
 
 
 async def aguardar_cdp_pronto(timeout_s: float = 60.0, intervalo_s: float = 0.5) -> bool:
-    """Polling até CDP responder ou timeout."""
+    """Polling até CDP responder ou timeout. Considera todas as portas tentativas."""
     elapsed = 0.0
     while elapsed < timeout_s:
         if cdp_disponivel():
@@ -268,18 +367,24 @@ async def aguardar_cdp_pronto(timeout_s: float = 60.0, intervalo_s: float = 0.5)
 
 async def conectar(pw: Playwright) -> tuple[Browser, BrowserContext, Page]:
     """
-    Conecta via CDP, retorna (browser, context, page).
-    Pré-condição: CDP já deve estar ativo (chamado por `abrir_navegador_com_cdp`
-    antes via UI). Se não estiver, levanta erro pedindo pra abrir o navegador.
+    Conecta via CDP na porta ativa do app, retorna (browser, context, page).
+    Pré-condição: a UI deve ter chamado `abrir_navegador_com_cdp` antes (no
+    botão "Abrir SACI"). Se nenhuma porta tiver CDP nosso, levanta erro claro.
     """
-    if not cdp_disponivel():
+    # Pode ter aberto via UI já — ou a sessão pode estar em porta backup.
+    porta = descobrir_porta_cdp_nossa() or (
+        get_porta_ativa() if cdp_disponivel(get_porta_ativa()) else None
+    )
+    if porta is None:
         raise RuntimeError(
-            f"Nenhum navegador respondendo CDP na porta {config.CDP_PORTA}. "
-            "Clique em 'Abrir SACI' na tela de pré-execução pra abrir o navegador "
-            "corretamente, autentique-se no SACI e tente de novo."
+            f"Nenhum navegador respondendo CDP nas portas tentativas "
+            f"{config.CDP_PORTAS_TENTATIVAS}. Clique em 'Abrir SACI' na tela de "
+            "pré-execução pra abrir o navegador corretamente, autentique-se no "
+            "SACI e tente de novo."
         )
+    _set_porta_ativa(porta)
 
-    cdp_url = f"http://localhost:{config.CDP_PORTA}"
+    cdp_url = f"http://localhost:{porta}"
     log.info(f"Conectando via CDP em {cdp_url}...")
     browser = await pw.chromium.connect_over_cdp(cdp_url)
 

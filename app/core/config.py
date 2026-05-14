@@ -32,7 +32,17 @@ FUNCOES_INSTRUTOR: frozenset[str] = frozenset({
 FUNCAO_PILOTO_COMANDO: str = "Piloto em Comando"
 
 # ── Conexao CDP com Chromium (Chrome / Brave / Edge / Opera) ──────────────────
-CDP_PORTA = 9222
+# Lista ordenada de portas que o app tenta. A primeira disponível (não ocupada
+# por outro processo, ou já hospedando uma sessão SACI nossa) é usada.
+# Útil pra coexistir com OUTRAS automações que também usam CDP (ex.: o Chrome
+# do usuário aberto em 9222 pra outro projeto). Se 9222 está ocupada, o app
+# pula pra 9223, e assim por diante.
+CDP_PORTAS_TENTATIVAS = (9222, 9223, 9224, 9225, 9226)
+
+# Alias retrocompatível — algumas partes antigas leem `CDP_PORTA`. Reflete só
+# a porta preferencial (primeira da lista). A porta REAL em uso pelo app é
+# rastreada em runtime via app.core.browser.get_porta_ativa().
+CDP_PORTA = CDP_PORTAS_TENTATIVAS[0]
 
 # ── Timeouts ──────────────────────────────────────────────────────────────────
 RETRY_VEZES              = 3
