@@ -94,16 +94,68 @@ def _glow_azul(left=None, right=None, top=None, bottom=None,
     )
 
 
-def _classificar_dialogs(dialogs: list) -> str:
+def _classificar_dialogs(dialogs: list) -> tuple[str, str]:
+    """
+    Classifica o resultado de um lançamento baseado nos dialogs/alerts capturados.
+    Retorna (classificacao, msg_normalizada).
+
+    Política CONSERVADORA: só retorna "sucesso" se houver prova POSITIVA
+    explícita no alert do SACI. Qualquer ambiguidade é tratada como
+    "desconhecido" e a UI marca como FALHA (não como sucesso silencioso).
+    """
     alerts = [d for d in dialogs if d.get("type") == "alert"]
     if not alerts:
-        return "desconhecido"
-    msg = alerts[-1].get("message", "").lower()
-    if any(t in msg for t in ("sucesso", "efetuado", "salvo", "registrado")):
-        return "sucesso"
-    if any(t in msg for t in ("obrigat", "invalid", "erro", "incorret", "falha")):
-        return "erro_validacao"
-    return "desconhecido"
+        return ("desconhecido", "")
+    msg = alerts[-1].get("message", "")
+    msg_norm = msg.lower()
+
+    # Prova positiva de sucesso: alert com palavras inequívocas.
+    # IMPORTANTE: "salvo" sozinho é forte ("Registro salvo com sucesso");
+    # "registrado" idem. "efetuado" cobre "Lançamento efetuado".
+    PROVAS_SUCESSO = (
+        "salvo com sucesso", "salvo!",
+        "registrado com sucesso", "registrado!",
+        "efetuado com sucesso", "efetuado!",
+        "operacao efetuada", "operação efetuada",
+        "incluido com sucesso", "incluído com sucesso",
+        "cadastrado com sucesso",
+    )
+    if any(t in msg_norm for t in PROVAS_SUCESSO):
+        return ("sucesso", msg)
+
+    PROVAS_ERRO = (
+        "obrigat", "invalid", "erro", "incorret", "falha",
+        "ja existe", "já existe", "duplicado",
+    )
+    if any(t in msg_norm for t in PROVAS_ERRO):
+        return ("erro_validacao", msg)
+
+    return ("desconhecido", msg)
+
+
+async def _salvar_screenshot_forensics(page_pw, linha_planilha: int, motivo: str) -> str:
+    """
+    Tira screenshot da tela do SACI no estado atual e salva em
+    %APPDATA%/Iter/AppAnac/diagnostico/<data>-linha-N-<motivo>.png.
+
+    Retorna o caminho do arquivo (ou string vazia se falhar).
+    Usado quando o desfecho do lançamento é ambíguo — permite o suporte
+    pedir o arquivo pro cliente e ver exatamente o que o SACI mostrou.
+    """
+    import os as _os
+    from datetime import datetime as _dt
+    try:
+        base = Path(_os.environ.get("APPDATA", str(Path.home() / ".iter")))
+        pasta = base / "Iter" / "AppAnac" / "diagnostico"
+        pasta.mkdir(parents=True, exist_ok=True)
+        stamp = _dt.now().strftime("%Y%m%d-%H%M%S")
+        nome = f"{stamp}-linha-{linha_planilha}-{motivo}.png"
+        destino = pasta / nome
+        await page_pw.screenshot(path=str(destino), full_page=True)
+        return str(destino)
+    except Exception as exc:
+        log.warning(f"Falha ao salvar screenshot forensics: {exc}")
+        return ""
 
 
 def _toast(page: ft.Page, msg: str) -> None:
@@ -814,7 +866,13 @@ def construir(page: ft.Page, ao_concluir: Callable[[int, int, float], None]) -> 
                         _atualizar_progresso(i, total, sucessos, falhas)
                         continue
 
+                    # Política conservadora: só conta sucesso com PROVA POSITIVA
+                    # de que o SACI salvou (alert "salvo com sucesso", redirect
+                    # pra listagem, ou modal HTML confirmando). Qualquer
+                    # ambiguidade → FALHA + screenshot pra diagnóstico.
                     tipo = resposta.get("tipo")
+                    nlinha = linha['linha_planilha']
+
                     if tipo == "sessao_expirada":
                         log.error(
                             f"Sessão SACI expirada (URL: {resposta.get('url')}). "
@@ -823,35 +881,102 @@ def construir(page: ft.Page, ao_concluir: Callable[[int, int, float], None]) -> 
                         falhas += 1
                         _atualizar_progresso(i, total, sucessos, falhas)
                         break
+
                     elif tipo == "native_dialog":
-                        classificacao = _classificar_dialogs(
+                        classificacao, msg = _classificar_dialogs(
                             resposta.get("dialogs", [])
                         )
                         if classificacao == "sucesso":
-                            log.info(f"Linha {linha['linha_planilha']} salva.")
+                            log.info(f"Linha {nlinha} salva: {msg!r}")
                             sucessos += 1
                         elif classificacao == "erro_validacao":
+                            screenshot = await _salvar_screenshot_forensics(
+                                page_pw, nlinha, "erro-validacao"
+                            )
                             log.error(
-                                f"Erro de validação na linha "
-                                f"{linha['linha_planilha']}."
+                                f"Linha {nlinha} REJEITADA pelo SACI: {msg!r}"
+                                + (f" — screenshot: {screenshot}" if screenshot else "")
                             )
                             falhas += 1
                         else:
-                            log.warning(
-                                f"Popup do lançamento {i} não reconhecido."
+                            screenshot = await _salvar_screenshot_forensics(
+                                page_pw, nlinha, "popup-ambiguo"
+                            )
+                            log.error(
+                                f"Linha {nlinha} popup ambíguo (msg: {msg!r}) — "
+                                "tratando como FALHA. Confira o SACI manualmente"
+                                + (f". Screenshot: {screenshot}" if screenshot else "")
+                            )
+                            falhas += 1
+
+                    elif tipo == "redirect":
+                        # Sucesso apenas se redirecionou pra URL associada a
+                        # salvamento (lista de CIVs, confirmação de inclusão).
+                        url_dest = (resposta.get("url") or "").lower()
+                        SINAIS_SUCESSO = (
+                            "listarciv", "consultarciv", "listar_civ",
+                            "incluircivok", "sucesso", "confirma",
+                        )
+                        if any(t in url_dest for t in SINAIS_SUCESSO):
+                            log.info(
+                                f"Linha {nlinha} salva (redirect: {resposta.get('url')})"
                             )
                             sucessos += 1
-                    elif tipo == "redirect":
-                        sucessos += 1
+                        else:
+                            screenshot = await _salvar_screenshot_forensics(
+                                page_pw, nlinha, "redirect-inesperado"
+                            )
+                            log.error(
+                                f"Linha {nlinha} redirect inesperado pra "
+                                f"{resposta.get('url')} — tratando como FALHA"
+                                + (f". Screenshot: {screenshot}" if screenshot else "")
+                            )
+                            falhas += 1
+
                     elif tipo == "html_modal":
-                        log.warning(f"Modal HTML no lançamento {i}.")
-                        sucessos += 1
-                    else:
-                        log.warning(
-                            f"Nada visível mudou após #salvar "
-                            f"(URL: {resposta.get('url')})."
+                        texto_modal = (resposta.get("texto") or "").lower()
+                        SINAIS_SUCESSO_MODAL = (
+                            "salvo", "salvo!", "sucesso",
+                            "registrado", "efetuado", "incluido", "incluído",
                         )
-                        sucessos += 1
+                        SINAIS_ERRO_MODAL = (
+                            "erro", "invalid", "obrigat", "falha", "incorret",
+                        )
+                        if any(t in texto_modal for t in SINAIS_ERRO_MODAL):
+                            screenshot = await _salvar_screenshot_forensics(
+                                page_pw, nlinha, "modal-erro"
+                            )
+                            log.error(
+                                f"Linha {nlinha} modal de erro: {texto_modal[:120]!r}"
+                                + (f" — screenshot: {screenshot}" if screenshot else "")
+                            )
+                            falhas += 1
+                        elif any(t in texto_modal for t in SINAIS_SUCESSO_MODAL):
+                            log.info(
+                                f"Linha {nlinha} salva (modal: {texto_modal[:80]!r})"
+                            )
+                            sucessos += 1
+                        else:
+                            screenshot = await _salvar_screenshot_forensics(
+                                page_pw, nlinha, "modal-ambiguo"
+                            )
+                            log.error(
+                                f"Linha {nlinha} modal HTML ambíguo: "
+                                f"{texto_modal[:120]!r} — tratando como FALHA"
+                                + (f". Screenshot: {screenshot}" if screenshot else "")
+                            )
+                            falhas += 1
+
+                    else:  # "noop" — nada visível mudou
+                        screenshot = await _salvar_screenshot_forensics(
+                            page_pw, nlinha, "noop"
+                        )
+                        log.error(
+                            f"Linha {nlinha}: nada mudou após #salvar "
+                            f"(URL: {resposta.get('url')}). Tratando como FALHA"
+                            + (f". Screenshot: {screenshot}" if screenshot else "")
+                        )
+                        falhas += 1
 
                     _atualizar_progresso(i, total, sucessos, falhas)
             finally:

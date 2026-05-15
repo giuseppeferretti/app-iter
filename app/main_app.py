@@ -32,6 +32,7 @@ except ImportError:
 import flet as ft
 
 from app.core.logger import get_logger
+from app.core.updater import InfoUpdate, checar_atualizacao_em_background
 from app.licensing.cache import limpar_sessao
 from app.licensing.verificador import checar_acesso
 from app.ui import tela_licenca, tela_onboarding, tela_principal, tela_relatorio
@@ -40,7 +41,7 @@ from app.ui.componentes import (
 )
 from app.ui.fundo import camadas_ambient
 
-VERSAO = "0.1.0"
+VERSAO = "0.1.3"
 
 # Flip para False antes do release. Env var APP_ANAC_DEV=0 também desliga.
 # Default agora é 0 (produção) — exige opt-in explícito pra DEV.
@@ -262,6 +263,54 @@ def main(page: ft.Page):
         ir_para_principal()
 
     roteamento()
+
+    # ── Verificação de atualização (background, não bloqueante) ─────────────
+    # Roda 4 segundos após o boot pra não competir com a tela inicial.
+    # Se há nova versão no GitHub Releases, mostra um dialog discreto.
+    def _avisar_update(info: InfoUpdate) -> None:
+        try:
+            def _baixar(_):
+                import webbrowser
+                webbrowser.open(info.download_url)
+                try:
+                    page.pop_dialog()
+                except Exception:
+                    pass
+
+            def _depois(_):
+                try:
+                    page.pop_dialog()
+                except Exception:
+                    pass
+
+            dlg = ft.AlertDialog(
+                modal=True,
+                title=ft.Text(
+                    f"Atualização disponível: v{info.versao_remota}",
+                    size=18, weight=ft.FontWeight.W_700,
+                ),
+                content=ft.Text(
+                    f"Você tem a versão {VERSAO}. Baixe a v{info.versao_remota} "
+                    "pra ter as últimas correções. Feche o app antes de instalar.",
+                    size=13, color=COR_MUTED,
+                ),
+                actions=[
+                    ft.TextButton(content="Lembrar depois", on_click=_depois),
+                    ft.ElevatedButton(
+                        content="Baixar agora",
+                        on_click=_baixar,
+                        bgcolor=COR_PRIMARY,
+                        color="#ffffff",
+                    ),
+                ],
+            )
+            page.show_dialog(dlg)
+            page.update()
+        except Exception as exc:
+            log.warning(f"Falha ao exibir dialog de update: {exc}")
+
+    if not DEV_MODE:
+        checar_atualizacao_em_background(VERSAO, _avisar_update)
 
 
 if __name__ == "__main__":
